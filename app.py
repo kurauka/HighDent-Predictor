@@ -8,7 +8,6 @@ from io import BytesIO
 import requests
 import json
 import re
-import os
 
 app = FastAPI(
     title="Plastic Classification API",
@@ -19,34 +18,25 @@ app = FastAPI(
 # CORS setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Update this in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Download model from Google Drive if not already present
-MODEL_PATH = "models/1.keras"
+# Fetch model directly from Google Drive and load from memory
 GDRIVE_MODEL_URL = "https://drive.google.com/uc?export=download&id=1_2oIx2AegYXiROo3JGKjXWod2QmewpYq"
 
-if not os.path.exists(MODEL_PATH):
-    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-    print("Downloading model from Google Drive...")
-    response = requests.get(GDRIVE_MODEL_URL)
-    if response.status_code == 200:
-        with open(MODEL_PATH, "wb") as f:
-            f.write(response.content)
-        print("Model downloaded successfully.")
-    else:
-        raise RuntimeError(f"Failed to download model: HTTP {response.status_code}")
-
-# Load TensorFlow model
 try:
-    MODEL = tf.keras.models.load_model(MODEL_PATH)
+    print("Fetching model from Google Drive...")
+    response = requests.get(GDRIVE_MODEL_URL)
+    response.raise_for_status()
+    model_bytes = BytesIO(response.content)
+    MODEL = tf.keras.models.load_model(model_bytes)
+    print("Model loaded from memory.")
 except Exception as e:
-    raise RuntimeError(f"Failed to load model: {str(e)}")
+    raise RuntimeError(f"Failed to load model from Google Drive: {str(e)}")
 
-# Class labels
 CLASS_NAMES = [
     "HDPE (High-Density Polyethylene)",
     "OTHERS",
@@ -83,7 +73,6 @@ async def predict(file: UploadFile = File(...)):
     try:
         image = read_file_as_image(await file.read())
         img_batch = np.expand_dims(image, 0)
-
         predictions = MODEL.predict(img_batch)
         predicted_class = CLASS_NAMES[np.argmax(predictions[0])]
         confidence = float(np.max(predictions[0]))
@@ -108,7 +97,6 @@ def clean_json_output(response_text: str) -> str:
         match = re.search(r"```json\s*(\{.*?\})\s*```", response_text, re.DOTALL)
         if match:
             return match.group(1)
-
         start = response_text.index('{')
         end = response_text.rindex('}') + 1
         return response_text[start:end]
@@ -167,7 +155,3 @@ async def get_insights(request: InsightRequest):
         raise HTTPException(status_code=500, detail=f"Failed to parse Gemini response: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
